@@ -215,22 +215,14 @@ def files_list(request):
             unique_filename=True,
             resource_type=resource_type,
         )
-        # Build a stable URL: for raw, swap /image/ → /raw/ just in case
-        raw_url = result.get('secure_url', '')
-        if resource_type == 'raw' and '/image/' in raw_url:
-            raw_url = raw_url.replace('/image/', '/raw/', 1)
-
-        # Store a placeholder path in FileField so Django is happy,
-        # but we override file_url in the serializer via cloudinary_url field
-        f = UploadedFile(
+        cloud_url = result.get('secure_url', '')
+        f = UploadedFile.objects.create(
             user=request.user,
             name=uploaded.name,
+            cloudinary_url=cloud_url,
             file_type=ftype,
             size=uploaded.size,
         )
-        # Save cloudinary URL directly into file.name (used by serializer)
-        f.file.name = raw_url
-        f.save()
     else:
         f = UploadedFile.objects.create(
             user=request.user,

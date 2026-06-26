@@ -72,18 +72,18 @@ class UploadedFileSerializer(serializers.ModelSerializer):
         extra_kwargs = {'file': {'write_only': True}}
 
     def get_file_url(self, obj):
+        # 1. New uploads: cloudinary_url field has the direct URL
+        if getattr(obj, 'cloudinary_url', ''):
+            return obj.cloudinary_url
+        # 2. Old uploads via django-cloudinary-storage
         if obj.file:
             try:
-                name = obj.file.name or ''
-                # Full URL stored directly (new raw uploads via SDK)
-                if name.startswith('https://') or name.startswith('http://'):
-                    return name
-                # Cloudinary storage — obj.file.url returns full URL, use as-is
                 url = obj.file.url
                 if url.startswith('http'):
                     return url
                 # Local storage fallback: strip double media/ prefix
                 from django.conf import settings
+                name = obj.file.name or ''
                 if name.startswith('media/'):
                     name = name[len('media/'):]
                 return settings.MEDIA_URL + name

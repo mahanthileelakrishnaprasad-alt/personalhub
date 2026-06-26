@@ -39,7 +39,8 @@ class UploadedFile(models.Model):
     ]
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='files')
     name = models.CharField(max_length=255)
-    file = models.FileField(upload_to='uploads/%Y/%m/')
+    file = models.FileField(upload_to='uploads/%Y/%m/', blank=True)
+    cloudinary_url = models.TextField(blank=True, default='')  # full URL for cloud-stored files
     file_type = models.CharField(max_length=10, choices=FILE_TYPES, default='other')
     size = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
