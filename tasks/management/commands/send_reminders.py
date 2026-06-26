@@ -16,17 +16,23 @@ from datetime import date
 from tasks.models import Task, RoutineTask, RoutineLog, UserProfile
 
 BREVO_API_KEY = os.environ.get('BREVO_API_KEY', '')
-FROM_EMAIL = 'PersonalHub <noreply@personalhub.local>'
+FROM_EMAIL = os.environ.get(
+    "FROM_EMAIL",
+    "mahanthileelakrishnaprasad@gmail.com"
+)
 
 
 def _send_via_brevo(to_email, subject, body):
     """Send an email via Brevo transactional API over HTTPS."""
     payload = json.dumps({
-        'sender': {'name': 'PersonalHub', 'email': 'mahanthileelakrishnaprasad@gmail.com'},
-        'to': [{'email': to_email}],
-        'subject': subject,
-        'textContent': body,
-    }).encode('utf-8')
+    'sender': {
+        'name': 'PersonalHub',
+        'email': FROM_EMAIL,
+    },
+    'to': [{'email': to_email}],
+    'subject': subject,
+    'textContent': body,
+}).encode('utf-8')
 
     req = urllib.request.Request(
         'https://api.brevo.com/v3/smtp/email',
