@@ -196,13 +196,49 @@ def files_list(request):
     else:
         ftype = 'other'
 
-    f = UploadedFile.objects.create(
-        user=request.user,
-        name=uploaded.name,
-        file=uploaded,
-        file_type=ftype,
-        size=uploaded.size,
+    # Upload to Cloudinary directly so we can set resource_type correctly.
+    # Images → resource_type=image (supports transformations)
+    # Everything else (PDF, text, zip…) → resource_type=raw (served as-is)
+    from django.conf import settings as _settings
+    cloudinary_active = bool(
+        _settings.CLOUDINARY_STORAGE.get('CLOUD_NAME') and
+        getattr(_settings, 'DEFAULT_FILE_STORAGE', '').startswith('cloudinary')
     )
+
+    if cloudinary_active:
+        import cloudinary.uploader as _cu
+        resource_type = 'image' if ftype == 'image' else 'raw'
+        result = _cu.upload(
+            uploaded,
+            folder='media/uploads',
+            use_filename=True,
+            unique_filename=True,
+            resource_type=resource_type,
+        )
+        # Build a stable URL: for raw, swap /image/ → /raw/ just in case
+        raw_url = result.get('secure_url', '')
+        if resource_type == 'raw' and '/image/' in raw_url:
+            raw_url = raw_url.replace('/image/', '/raw/', 1)
+
+        # Store a placeholder path in FileField so Django is happy,
+        # but we override file_url in the serializer via cloudinary_url field
+        f = UploadedFile(
+            user=request.user,
+            name=uploaded.name,
+            file_type=ftype,
+            size=uploaded.size,
+        )
+        # Save cloudinary URL directly into file.name (used by serializer)
+        f.file.name = raw_url
+        f.save()
+    else:
+        f = UploadedFile.objects.create(
+            user=request.user,
+            name=uploaded.name,
+            file=uploaded,
+            file_type=ftype,
+            size=uploaded.size,
+        )
     return Response(UploadedFileSerializer(f).data, status=201)
 
 

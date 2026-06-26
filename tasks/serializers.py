@@ -74,7 +74,19 @@ class UploadedFileSerializer(serializers.ModelSerializer):
     def get_file_url(self, obj):
         if obj.file:
             try:
-                return obj.file.url
+                name = obj.file.name or ''
+                # Full URL stored directly (new raw uploads via SDK)
+                if name.startswith('https://') or name.startswith('http://'):
+                    return name
+                # Cloudinary storage — obj.file.url returns full URL, use as-is
+                url = obj.file.url
+                if url.startswith('http'):
+                    return url
+                # Local storage fallback: strip double media/ prefix
+                from django.conf import settings
+                if name.startswith('media/'):
+                    name = name[len('media/'):]
+                return settings.MEDIA_URL + name
             except Exception:
                 return None
         return None
