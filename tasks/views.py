@@ -328,54 +328,17 @@ def file_proxy(request, pk):
         safe_name = f.name.replace(chr(34), '')
         disposition = f'attachment; filename="{safe_name}"'
 
-    # Use Cloudinary's private_download_url to get a signed, time-limited URL.
-    # This is the official way to access raw/restricted Cloudinary resources.
+    # Build the correct Cloudinary fetch URL using the SDK.
+    # Determine resource_type from the stored URL path.
     import re as _re
-    from django.conf import settings as _s
-    try:
-        import cloudinary
-        import cloudinary.utils as _cu
-        cfg = _s.CLOUDINARY_STORAGE
-        cloudinary.config(
-            cloud_name=cfg.get('CLOUD_NAME', ''),
-            api_key=cfg.get('API_KEY', ''),
-            api_secret=cfg.get('API_SECRET', ''),
-        )
-        # Extract public_id from URL — for raw files this INCLUDES the extension
-        # URL pattern: https://res.cloudinary.com/{cloud}/{rtype}/upload/v{ver}/{public_id}
-        m = _re.search(r'/upload/(?:v\d+/)?(.+)$', stored_url)
-        if not m:
-            raise ValueError(f'Cannot parse public_id from: {stored_url}')
-        public_id_with_ext = m.group(1)  # e.g. media/uploads/file_abc123.pdf
+    m = _re.search(r'cloudinary\.com/[^/]+/(image|raw|video)/upload/', stored_url)
+    detected_rtype = m.group(1) if m else 'raw'
 
-        # Determine resource type from URL
-        rt_match = _re.search(r'/(image|raw|video)/upload/', stored_url)
-        rtype = rt_match.group(1) if rt_match else 'raw'
-
-        # For PDFs stored as image type (old auto uploads), use raw
-        if f.file_type == 'pdf' and rtype == 'image':
-            rtype = 'raw'
-            public_id_with_ext = public_id_with_ext  # keep .pdf extension
-
-        # Split public_id and format (extension)
-        if '.' in public_id_with_ext.split('/')[-1]:
-            dot_idx = public_id_with_ext.rfind('.')
-            public_id = public_id_with_ext[:dot_idx]
-            fmt = public_id_with_ext[dot_idx+1:]
-        else:
-            public_id = public_id_with_ext
-            fmt = ''
-
-        signed_url = _cu.private_download_url(
-            public_id,
-            fmt,
-            resource_type=rtype,
-            type='upload',
-        )
-        fetch_url = signed_url
-    except Exception as sign_err:
-        # Fallback: use stored URL directly
-        fetch_url = stored_url
+    # For old 'image'-type PDF uploads (broken), try fetching as 'raw' instead
+    fetch_url = stored_url
+    if detected_rtype == 'image' and f.file_type == 'pdf':
+        # Swap /image/upload/ → /raw/upload/ — Cloudinary raw serves the file as-is
+        fetch_url = stored_url.replace('/image/upload/', '/raw/upload/', 1)
 
     def try_fetch(url):
         req = _urllib_req.Request(url, headers={'User-Agent': 'PersonalHub/1.0'})
@@ -384,10 +347,14 @@ def file_proxy(request, pk):
     try:
         remote = try_fetch(fetch_url)
     except Exception as e:
-        return HttpResponse(
-            f'Could not fetch file.\nURL: {fetch_url}\nError: {e}',
-            status=502, content_type='text/plain'
-        )
+        # Last resort: try the original stored URL
+        try:
+            remote = try_fetch(stored_url)
+        except Exception as e2:
+            return HttpResponse(
+                f'Could not fetch file.\nTried: {fetch_url}\nAlso tried: {stored_url}\nError: {e2}',
+                status=502, content_type='text/plain'
+            )
 
     response = StreamingHttpResponse(remote, content_type=content_type)
     response['Content-Disposition'] = disposition
