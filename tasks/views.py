@@ -207,14 +207,20 @@ def files_list(request):
 
     if cloudinary_active:
         import cloudinary.uploader as _cu
+        # Images → resource_type='image', everything else → resource_type='raw'
+        # Do NOT use 'auto' for PDFs — Cloudinary stores them as image type
+        # which creates broken delivery URLs ending in .pdf under /image/upload/.
         resource_type = 'image' if ftype == 'image' else 'raw'
-        result = _cu.upload(
-            uploaded,
-            folder='media/uploads',
-            use_filename=True,
-            unique_filename=True,
-            resource_type=resource_type,
-        )
+        try:
+            result = _cu.upload(
+                uploaded,
+                folder='media/uploads',
+                use_filename=True,
+                unique_filename=True,
+                resource_type=resource_type,
+            )
+        except Exception as upload_err:
+            return Response({'detail': f'Cloudinary upload failed: {upload_err}'}, status=500)
         cloud_url = result.get('secure_url', '')
         f = UploadedFile.objects.create(
             user=request.user,
@@ -248,6 +254,113 @@ def file_delete(request, pk):
             pass
     f.delete()
     return Response(status=204)
+
+
+@csrf_exempt
+def file_proxy(request, pk):
+    """
+    Proxy a Cloudinary-stored file through Django.
+    Auth: Token in Authorization header OR ?token= query param.
+    """
+    from django.http import HttpResponse, StreamingHttpResponse
+
+    # ── Step 1: resolve the user from token ──────────────────────────────────
+    auth_user = None
+
+    # Try Authorization header first (Token abc123)
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if auth_header.startswith('Token '):
+        header_key = auth_header[6:].strip()
+        try:
+            auth_user = Token.objects.select_related('user').get(key=header_key).user
+        except Token.DoesNotExist:
+            pass
+
+    # Fall back to ?token= query param (used by window.open)
+    if auth_user is None:
+        query_key = request.GET.get('token', '').strip()
+        if query_key:
+            try:
+                auth_user = Token.objects.select_related('user').get(key=query_key).user
+            except Token.DoesNotExist:
+                return HttpResponse('Unauthorized: invalid token', status=401)
+
+    # Also accept if DRF already authenticated the request
+    if auth_user is None and hasattr(request, 'user') and request.user.is_authenticated:
+        auth_user = request.user
+
+    if auth_user is None:
+        return HttpResponse('Unauthorized: no token provided', status=401)
+
+    # ── Step 2: check account is approved ────────────────────────────────────
+    if not auth_user.is_superuser:
+        try:
+            from .models import UserProfile as _UP
+            prof = _UP.objects.get(user=auth_user)
+            if not prof.is_approved:
+                return HttpResponse('Forbidden: account not approved', status=403)
+        except _UP.DoesNotExist:
+            return HttpResponse('Forbidden: no profile', status=403)
+
+    # ── Step 3: fetch the file record ───────────────────────────────────────
+    try:
+        f = UploadedFile.objects.get(pk=pk, user=auth_user)
+    except UploadedFile.DoesNotExist:
+        return HttpResponse('Not found', status=404)
+
+    stored_url = getattr(f, 'cloudinary_url', '') or (f.file.url if f.file else None)
+    if not stored_url:
+        return HttpResponse('No file URL', status=404)
+
+    import urllib.request as _urllib_req
+    import urllib.error as _urllib_err
+
+    MIME_MAP = {
+        'image':  'image/jpeg',
+        'pdf':    'application/pdf',
+        'text':   'text/plain; charset=utf-8',
+        'other':  'application/octet-stream',
+    }
+    content_type = MIME_MAP.get(f.file_type, 'application/octet-stream')
+
+    disposition = 'inline'
+    if request.GET.get('download') == '1':
+        safe_name = f.name.replace(chr(34), '')
+        disposition = f'attachment; filename="{safe_name}"'
+
+    # Build the correct Cloudinary fetch URL using the SDK.
+    # Determine resource_type from the stored URL path.
+    import re as _re
+    m = _re.search(r'cloudinary\.com/[^/]+/(image|raw|video)/upload/', stored_url)
+    detected_rtype = m.group(1) if m else 'raw'
+
+    # For old 'image'-type PDF uploads (broken), try fetching as 'raw' instead
+    fetch_url = stored_url
+    if detected_rtype == 'image' and f.file_type == 'pdf':
+        # Swap /image/upload/ → /raw/upload/ — Cloudinary raw serves the file as-is
+        fetch_url = stored_url.replace('/image/upload/', '/raw/upload/', 1)
+
+    def try_fetch(url):
+        req = _urllib_req.Request(url, headers={'User-Agent': 'PersonalHub/1.0'})
+        return _urllib_req.urlopen(req, timeout=30)
+
+    try:
+        remote = try_fetch(fetch_url)
+    except Exception as e:
+        # Last resort: try the original stored URL
+        try:
+            remote = try_fetch(stored_url)
+        except Exception as e2:
+            return HttpResponse(
+                f'Could not fetch file.\nTried: {fetch_url}\nAlso tried: {stored_url}\nError: {e2}',
+                status=502, content_type='text/plain'
+            )
+
+    response = StreamingHttpResponse(remote, content_type=content_type)
+    response['Content-Disposition'] = disposition
+    response['Cache-Control'] = 'private, max-age=3600'
+    response['X-Frame-Options'] = 'SAMEORIGIN'
+    return response
 
 
 # ── Text Notes ────────────────────────────────────────────────────────────────

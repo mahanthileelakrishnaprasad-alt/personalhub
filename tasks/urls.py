@@ -19,6 +19,7 @@ urlpatterns = [
     # Files
     path('files/', views.files_list),
     path('files/<int:pk>/', views.file_delete),
+    path('files/<int:pk>/proxy/', views.file_proxy),
 
     # Notes
     path('notes/', views.notes_list),
