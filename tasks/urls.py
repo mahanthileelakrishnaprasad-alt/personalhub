@@ -11,6 +11,8 @@ urlpatterns = [
 
     # Tasks
     path('tasks/', views.tasks_list),
+    path('tasks/categories/', views.task_categories_list),
+    path('tasks/categories/<int:pk>/', views.task_category_detail),
     path('tasks/<int:pk>/', views.task_detail),
     path('tasks/<int:pk>/complete/', views.task_complete),
     path('tasks/<int:pk>/restore/', views.task_restore),
@@ -30,6 +32,7 @@ urlpatterns = [
     path('routine/tasks/<int:pk>/', views.routine_task_detail),
     path('routine/today/', views.routine_today),
     path('routine/logs/<int:pk>/toggle/', views.routine_log_toggle),
+    path('routine/history/', views.routine_history),
     path('routine/history/delete/', views.routine_delete_history),
 
     # Transactions

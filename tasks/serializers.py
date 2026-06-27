@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
-    UserProfile, Task, UploadedFile, RoutineTask, RoutineLog,
+    UserProfile, Task, TaskCategory, UploadedFile, RoutineTask, RoutineLog,
     TransactionCategory, Transaction, TextNote,
 )
 
@@ -45,12 +45,20 @@ class RegisterSerializer(serializers.Serializer):
         return user
 
 
+class TaskCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TaskCategory
+        fields = ['id', 'name']
+
+
 class TaskSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source='category.name', read_only=True, default=None)
+
     class Meta:
         model = Task
         fields = ['id', 'title', 'note', 'completed', 'created_at',
-                  'completed_at', 'reminder_at', 'reminder_sent']
-        read_only_fields = ['id', 'created_at', 'completed_at', 'reminder_sent']
+                  'completed_at', 'reminder_at', 'reminder_sent', 'category', 'category_name']
+        read_only_fields = ['id', 'created_at', 'completed_at', 'reminder_sent', 'category_name']
 
     def validate_reminder_at(self, value):
         # Make naive datetimes timezone-aware (fixes the known bug from old code)
@@ -95,7 +103,7 @@ class UploadedFileSerializer(serializers.ModelSerializer):
 class RoutineTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = RoutineTask
-        fields = ['id', 'title', 'is_active', 'reminder_time', 'created_at']
+        fields = ['id', 'title', 'is_active', 'reminder_time', 'created_at', 'active_days']
         read_only_fields = ['id', 'created_at']
 
 

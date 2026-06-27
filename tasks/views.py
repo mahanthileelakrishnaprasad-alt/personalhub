@@ -14,11 +14,11 @@ from django.core import management
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import (
-    Task, UploadedFile, RoutineTask, RoutineLog,
+    Task, TaskCategory, UploadedFile, RoutineTask, RoutineLog,
     TransactionCategory, Transaction, TextNote, UserProfile,
 )
 from .serializers import (
-    RegisterSerializer, UserSerializer, TaskSerializer, UploadedFileSerializer,
+    RegisterSerializer, UserSerializer, TaskSerializer, TaskCategorySerializer, UploadedFileSerializer,
     RoutineTaskSerializer, RoutineLogSerializer, TransactionCategorySerializer,
     TransactionSerializer, TextNoteSerializer, UserProfileSerializer,
 )
@@ -107,13 +107,48 @@ def update_profile(request):
 @approved_only
 def tasks_list(request):
     if request.method == 'GET':
-        tasks = Task.objects.filter(user=request.user)
+        tasks = Task.objects.filter(user=request.user).select_related('category')
+        cat = request.GET.get('category')
+        if cat == 'none':
+            tasks = tasks.filter(category__isnull=True)
+        elif cat:
+            tasks = tasks.filter(category_id=cat)
         return Response(TaskSerializer(tasks, many=True).data)
     s = TaskSerializer(data=request.data)
     if s.is_valid():
         s.save(user=request.user)
         return Response(s.data, status=201)
     return Response(s.errors, status=400)
+
+
+@api_view(['GET', 'POST'])
+@approved_only
+def task_categories_list(request):
+    if request.method == 'GET':
+        cats = TaskCategory.objects.filter(user=request.user)
+        return Response(TaskCategorySerializer(cats, many=True).data)
+    s = TaskCategorySerializer(data=request.data)
+    if s.is_valid():
+        s.save(user=request.user)
+        return Response(s.data, status=201)
+    return Response(s.errors, status=400)
+
+
+@api_view(['PATCH', 'DELETE'])
+@approved_only
+def task_category_detail(request, pk):
+    try:
+        cat = TaskCategory.objects.get(pk=pk, user=request.user)
+    except TaskCategory.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'PATCH':
+        s = TaskCategorySerializer(cat, data=request.data, partial=True)
+        if s.is_valid():
+            s.save()
+            return Response(s.data)
+        return Response(s.errors, status=400)
+    cat.delete()
+    return Response(status=204)
 
 
 @api_view(['GET', 'PATCH', 'DELETE'])
@@ -328,17 +363,62 @@ def file_proxy(request, pk):
         safe_name = f.name.replace(chr(34), '')
         disposition = f'attachment; filename="{safe_name}"'
 
-    # Build the correct Cloudinary fetch URL using the SDK.
-    # Determine resource_type from the stored URL path.
+    # Use Cloudinary's private_download_url to get a signed, time-limited URL.
+    # This is the official way to access raw/restricted Cloudinary resources.
     import re as _re
-    m = _re.search(r'cloudinary\.com/[^/]+/(image|raw|video)/upload/', stored_url)
-    detected_rtype = m.group(1) if m else 'raw'
+    from django.conf import settings as _s
+    try:
+        import cloudinary
+        import cloudinary.utils as _cu
+        cfg = _s.CLOUDINARY_STORAGE
+        cloudinary.config(
+            cloud_name=cfg.get('CLOUD_NAME', ''),
+            api_key=cfg.get('API_KEY', ''),
+            api_secret=cfg.get('API_SECRET', ''),
+        )
+        # Extract public_id from URL — for raw files this INCLUDES the extension
+        # URL pattern: https://res.cloudinary.com/{cloud}/{rtype}/upload/v{ver}/{public_id}
+        m = _re.search(r'/upload/(?:v\d+/)?(.+)$', stored_url)
+        if not m:
+            raise ValueError(f'Cannot parse public_id from: {stored_url}')
+        public_id_with_ext = m.group(1)  # e.g. media/uploads/file_abc123.pdf
 
-    # For old 'image'-type PDF uploads (broken), try fetching as 'raw' instead
-    fetch_url = stored_url
-    if detected_rtype == 'image' and f.file_type == 'pdf':
-        # Swap /image/upload/ → /raw/upload/ — Cloudinary raw serves the file as-is
-        fetch_url = stored_url.replace('/image/upload/', '/raw/upload/', 1)
+        # Determine resource type from URL
+        rt_match = _re.search(r'/(image|raw|video)/upload/', stored_url)
+        rtype = rt_match.group(1) if rt_match else 'raw'
+
+        # For PDFs stored as image type (old auto uploads), use raw
+        if f.file_type == 'pdf' and rtype == 'image':
+            rtype = 'raw'
+            public_id_with_ext = public_id_with_ext  # keep .pdf extension
+
+        # For raw resources, Cloudinary stores public_id WITH the extension.
+        # e.g. public_id = "media/uploads/file_abc.pdf", format = ""
+        # Using format="" and full public_id (with ext) is correct for raw type.
+        if rtype == 'raw':
+            # Raw: public_id includes extension, format must be empty string
+            public_id = public_id_with_ext
+            fmt = ''
+        else:
+            # Image: public_id without extension, format = extension
+            if '.' in public_id_with_ext.split('/')[-1]:
+                dot_idx = public_id_with_ext.rfind('.')
+                public_id = public_id_with_ext[:dot_idx]
+                fmt = public_id_with_ext[dot_idx+1:]
+            else:
+                public_id = public_id_with_ext
+                fmt = ''
+
+        signed_url = _cu.private_download_url(
+            public_id,
+            fmt,
+            resource_type=rtype,
+            type='upload',
+        )
+        fetch_url = signed_url
+    except Exception as sign_err:
+        # Fallback: use stored URL directly
+        fetch_url = stored_url
 
     def try_fetch(url):
         req = _urllib_req.Request(url, headers={'User-Agent': 'PersonalHub/1.0'})
@@ -347,14 +427,10 @@ def file_proxy(request, pk):
     try:
         remote = try_fetch(fetch_url)
     except Exception as e:
-        # Last resort: try the original stored URL
-        try:
-            remote = try_fetch(stored_url)
-        except Exception as e2:
-            return HttpResponse(
-                f'Could not fetch file.\nTried: {fetch_url}\nAlso tried: {stored_url}\nError: {e2}',
-                status=502, content_type='text/plain'
-            )
+        return HttpResponse(
+            f'Could not fetch file.\nURL: {fetch_url}\nError: {e}',
+            status=502, content_type='text/plain'
+        )
 
     response = StreamingHttpResponse(remote, content_type=content_type)
     response['Content-Disposition'] = disposition
@@ -399,9 +475,12 @@ def note_detail(request, pk):
 
 def _ensure_today_logs(user):
     today = date.today()
+    # today.weekday(): Mon=0, Tue=1, ..., Sun=6 — matches our bitmask
+    today_bit = 1 << today.weekday()
     active_routines = RoutineTask.objects.filter(user=user, is_active=True)
     for rt in active_routines:
-        RoutineLog.objects.get_or_create(routine_task=rt, date=today, defaults={'user': user})
+        if rt.active_days & today_bit:
+            RoutineLog.objects.get_or_create(routine_task=rt, date=today, defaults={'user': user})
 
 
 @api_view(['GET', 'POST'])
@@ -482,6 +561,35 @@ def routine_log_toggle(request, pk):
     log.completed_at = timezone.now() if log.completed else None
     log.save()
     return Response(RoutineLogSerializer(log).data)
+
+
+@api_view(['GET'])
+@approved_only
+def routine_history(request):
+    """Returns past logs grouped by date (last 30 days, excluding today)."""
+    today = date.today()
+    thirty_ago = today - timedelta(days=30)
+    logs = (RoutineLog.objects
+            .filter(user=request.user, date__gte=thirty_ago, date__lt=today)
+            .select_related('routine_task')
+            .order_by('-date', 'routine_task__title'))
+
+    # Group by date
+    from collections import OrderedDict
+    grouped = OrderedDict()
+    for log in logs:
+        d = str(log.date)
+        if d not in grouped:
+            grouped[d] = {'date': d, 'logs': [], 'done': 0, 'total': 0}
+        grouped[d]['logs'].append(RoutineLogSerializer(log).data)
+        grouped[d]['total'] += 1
+        if log.completed:
+            grouped[d]['done'] += 1
+
+    for g in grouped.values():
+        g['pct'] = int(g['done'] / g['total'] * 100) if g['total'] else 0
+
+    return Response(list(grouped.values()))
 
 
 @api_view(['DELETE'])

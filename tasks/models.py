@@ -13,6 +13,18 @@ class UserProfile(models.Model):
         return f"{self.user.username} ({'approved' if self.is_approved else 'pending'})"
 
 
+class TaskCategory(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='task_categories')
+    name = models.CharField(max_length=100)
+
+    class Meta:
+        ordering = ['name']
+        unique_together = ['user', 'name']
+
+    def __str__(self):
+        return self.name
+
+
 class Task(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tasks')
     title = models.CharField(max_length=300)
@@ -22,6 +34,10 @@ class Task(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     reminder_at = models.DateTimeField(null=True, blank=True)
     reminder_sent = models.BooleanField(default=False)
+    category = models.ForeignKey(
+        TaskCategory, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='tasks'
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -65,6 +81,8 @@ class RoutineTask(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     reminder_time = models.TimeField(null=True, blank=True)
+    # Bitmask: bit0=Mon, bit1=Tue, ..., bit6=Sun. 127 = all days.
+    active_days = models.PositiveSmallIntegerField(default=127)
 
     class Meta:
         ordering = ['created_at']
