@@ -11,6 +11,7 @@ urlpatterns = [
 
     # Tasks
     path('tasks/', views.tasks_list),
+    path('tasks/reorder/', views.task_reorder),
     path('tasks/categories/', views.task_categories_list),
     path('tasks/categories/<int:pk>/', views.task_category_detail),
     path('tasks/<int:pk>/', views.task_detail),

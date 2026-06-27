@@ -38,9 +38,10 @@ class Task(models.Model):
         TaskCategory, null=True, blank=True,
         on_delete=models.SET_NULL, related_name='tasks'
     )
+    position = models.PositiveIntegerField(default=0)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['position', 'created_at']
 
     def __str__(self):
         return self.title

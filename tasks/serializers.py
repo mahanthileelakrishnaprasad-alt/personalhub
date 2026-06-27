@@ -57,7 +57,7 @@ class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = ['id', 'title', 'note', 'completed', 'created_at',
-                  'completed_at', 'reminder_at', 'reminder_sent', 'category', 'category_name']
+                  'completed_at', 'reminder_at', 'reminder_sent', 'category', 'category_name', 'position']
         read_only_fields = ['id', 'created_at', 'completed_at', 'reminder_sent', 'category_name']
 
     def validate_reminder_at(self, value):

@@ -7,7 +7,7 @@ from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.utils import timezone
-from django.db.models import Sum
+from django.db.models import Sum, Max
 from datetime import date, timedelta
 import os, hmac, threading
 from django.core import management
@@ -116,9 +116,29 @@ def tasks_list(request):
         return Response(TaskSerializer(tasks, many=True).data)
     s = TaskSerializer(data=request.data)
     if s.is_valid():
-        s.save(user=request.user)
+        # Assign next position so new task goes to bottom of active list
+        max_pos = Task.objects.filter(user=request.user, completed=False).aggregate(m=Max('position'))['m'] or 0
+        s.save(user=request.user, position=max_pos + 1)
         return Response(s.data, status=201)
     return Response(s.errors, status=400)
+
+
+@api_view(['POST'])
+@approved_only
+def task_reorder(request):
+    """Body: {ordered_ids: [id, id, ...]} — reassigns position 1..n."""
+    ids = request.data.get('ordered_ids', [])
+    tasks = Task.objects.filter(user=request.user, id__in=ids)
+    id_to_task = {t.id: t for t in tasks}
+    to_update = []
+    for pos, tid in enumerate(ids, start=1):
+        t = id_to_task.get(tid)
+        if t and t.position != pos:
+            t.position = pos
+            to_update.append(t)
+    if to_update:
+        Task.objects.bulk_update(to_update, ['position'])
+    return Response({'updated': len(to_update)})
 
 
 @api_view(['GET', 'POST'])
