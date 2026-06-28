@@ -21,15 +21,20 @@ urlpatterns = [
 
     # Files
     path('files/', views.files_list),
+    path('files/folders/', views.file_folders_list),
+    path('files/folders/<int:pk>/', views.file_folder_detail),
     path('files/<int:pk>/', views.file_delete),
     path('files/<int:pk>/proxy/', views.file_proxy),
 
     # Notes
     path('notes/', views.notes_list),
+    path('notes/folders/', views.note_folders_list),
+    path('notes/folders/<int:pk>/', views.note_folder_detail),
     path('notes/<int:pk>/', views.note_detail),
 
     # Routine
     path('routine/tasks/', views.routine_tasks_list),
+    path('routine/reorder/', views.routine_reorder),
     path('routine/tasks/<int:pk>/', views.routine_task_detail),
     path('routine/today/', views.routine_today),
     path('routine/logs/<int:pk>/toggle/', views.routine_log_toggle),
@@ -40,7 +45,10 @@ urlpatterns = [
     path('transactions/categories/', views.categories_list),
     path('transactions/categories/<int:pk>/', views.category_detail),
     path('transactions/', views.transactions_list),
+    path('transactions/history/', views.transactions_history),
     path('transactions/<int:pk>/', views.transaction_detail),
+    path('transactions/<int:pk>/restore/', views.transaction_restore),
+    path('transactions/<int:pk>/permanent/', views.transaction_permanent_delete),
     path('transactions/delete-all/', views.transactions_delete_all),
 
     # Admin

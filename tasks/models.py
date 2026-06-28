@@ -47,6 +47,32 @@ class Task(models.Model):
         return self.title
 
 
+class FileFolder(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='file_folders')
+    name = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+        unique_together = ['user', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class NoteFolder(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='note_folders')
+    name = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+        unique_together = ['user', 'name']
+
+    def __str__(self):
+        return self.name
+
+
 class UploadedFile(models.Model):
     FILE_TYPES = [
         ('image', 'Image'),
@@ -57,10 +83,14 @@ class UploadedFile(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='files')
     name = models.CharField(max_length=255)
     file = models.FileField(upload_to='uploads/%Y/%m/', blank=True)
-    cloudinary_url = models.TextField(blank=True, default='')  # full URL for cloud-stored files
+    cloudinary_url = models.TextField(blank=True, default='')
     file_type = models.CharField(max_length=10, choices=FILE_TYPES, default='other')
     size = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
+    folder = models.ForeignKey(
+        FileFolder, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='files'
+    )
 
     class Meta:
         ordering = ['-uploaded_at']
@@ -82,11 +112,11 @@ class RoutineTask(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
     reminder_time = models.TimeField(null=True, blank=True)
-    # Bitmask: bit0=Mon, bit1=Tue, ..., bit6=Sun. 127 = all days.
     active_days = models.PositiveSmallIntegerField(default=127)
+    position = models.PositiveIntegerField(default=0)
 
     class Meta:
-        ordering = ['created_at']
+        ordering = ['position', 'created_at']
 
     def __str__(self):
         return self.title
@@ -136,6 +166,9 @@ class Transaction(models.Model):
     transaction_type = models.CharField(max_length=10, choices=TYPE_CHOICES, default='expense')
     note = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
+    # Soft-delete: deleted transactions moved to history for 30 days
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -145,13 +178,15 @@ class Transaction(models.Model):
 
 
 class TextNote(models.Model):
-    """A plain text note created/edited directly in the app (not an uploaded
-    file), shown alongside uploaded files on the Files page."""
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='text_notes')
     heading = models.CharField(max_length=255)
     body = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    folder = models.ForeignKey(
+        NoteFolder, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='notes'
+    )
 
     class Meta:
         ordering = ['-updated_at']

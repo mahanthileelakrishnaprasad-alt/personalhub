@@ -14,11 +14,12 @@ from django.core import management
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import (
-    Task, TaskCategory, UploadedFile, RoutineTask, RoutineLog,
-    TransactionCategory, Transaction, TextNote, UserProfile,
+    Task, TaskCategory, UploadedFile, FileFolder, NoteFolder,
+    RoutineTask, RoutineLog, TransactionCategory, Transaction, TextNote, UserProfile,
 )
 from .serializers import (
-    RegisterSerializer, UserSerializer, TaskSerializer, TaskCategorySerializer, UploadedFileSerializer,
+    RegisterSerializer, UserSerializer, TaskSerializer, TaskCategorySerializer,
+    UploadedFileSerializer, FileFolderSerializer, NoteFolderSerializer,
     RoutineTaskSerializer, RoutineLogSerializer, TransactionCategorySerializer,
     TransactionSerializer, TextNoteSerializer, UserProfileSerializer,
 )
@@ -234,7 +235,13 @@ def delete_all_treasure(request):
 @approved_only
 def files_list(request):
     if request.method == 'GET':
-        files = UploadedFile.objects.filter(user=request.user)
+        folder_id = request.GET.get('folder')
+        if folder_id == 'none':
+            files = UploadedFile.objects.filter(user=request.user, folder__isnull=True)
+        elif folder_id:
+            files = UploadedFile.objects.filter(user=request.user, folder_id=folder_id)
+        else:
+            files = UploadedFile.objects.filter(user=request.user)
         return Response(UploadedFileSerializer(files, many=True).data)
 
     uploaded = request.FILES.get('file')
@@ -295,13 +302,17 @@ def files_list(request):
     return Response(UploadedFileSerializer(f).data, status=201)
 
 
-@api_view(['DELETE'])
+@api_view(['PATCH', 'DELETE'])
 @approved_only
 def file_delete(request, pk):
     try:
         f = UploadedFile.objects.get(pk=pk, user=request.user)
     except UploadedFile.DoesNotExist:
         return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'PATCH':
+        f.folder_id = request.data.get('folder')
+        f.save(update_fields=['folder'])
+        return Response(UploadedFileSerializer(f).data)
     if f.file:
         try:
             f.file.delete(save=False)
@@ -309,6 +320,117 @@ def file_delete(request, pk):
             pass
     f.delete()
     return Response(status=204)
+
+
+@api_view(['GET', 'POST'])
+@approved_only
+def file_folders_list(request):
+    if request.method == 'GET':
+        return Response(FileFolderSerializer(FileFolder.objects.filter(user=request.user), many=True).data)
+    s = FileFolderSerializer(data=request.data)
+    if s.is_valid():
+        s.save(user=request.user)
+        return Response(s.data, status=201)
+    return Response(s.errors, status=400)
+
+
+@api_view(['PATCH', 'DELETE'])
+@approved_only
+def file_folder_detail(request, pk):
+    try:
+        folder = FileFolder.objects.get(pk=pk, user=request.user)
+    except FileFolder.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'PATCH':
+        s = FileFolderSerializer(folder, data=request.data, partial=True)
+        if s.is_valid():
+            s.save()
+            return Response(s.data)
+        return Response(s.errors, status=400)
+    folder.delete()
+    return Response(status=204)
+
+
+@api_view(['GET', 'POST'])
+@approved_only
+def note_folders_list(request):
+    if request.method == 'GET':
+        return Response(NoteFolderSerializer(NoteFolder.objects.filter(user=request.user), many=True).data)
+    s = NoteFolderSerializer(data=request.data)
+    if s.is_valid():
+        s.save(user=request.user)
+        return Response(s.data, status=201)
+    return Response(s.errors, status=400)
+
+
+@api_view(['PATCH', 'DELETE'])
+@approved_only
+def note_folder_detail(request, pk):
+    try:
+        folder = NoteFolder.objects.get(pk=pk, user=request.user)
+    except NoteFolder.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'PATCH':
+        s = NoteFolderSerializer(folder, data=request.data, partial=True)
+        if s.is_valid():
+            s.save()
+            return Response(s.data)
+        return Response(s.errors, status=400)
+    folder.delete()
+    return Response(status=204)
+
+
+@api_view(['GET'])
+@approved_only
+def transactions_history(request):
+    from datetime import timedelta
+    from django.utils import timezone as _tz
+    cutoff = _tz.now() - timedelta(days=30)
+    txns = Transaction.objects.filter(
+        user=request.user, is_deleted=True, deleted_at__gte=cutoff
+    ).select_related('category')
+    return Response(TransactionSerializer(txns, many=True).data)
+
+
+@api_view(['POST'])
+@approved_only
+def transaction_restore(request, pk):
+    try:
+        t = Transaction.objects.get(pk=pk, user=request.user, is_deleted=True)
+    except Transaction.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    t.is_deleted = False
+    t.deleted_at = None
+    t.save(update_fields=['is_deleted', 'deleted_at'])
+    return Response(TransactionSerializer(t).data)
+
+
+@api_view(['DELETE'])
+@approved_only
+def transaction_permanent_delete(request, pk):
+    try:
+        t = Transaction.objects.get(pk=pk, user=request.user, is_deleted=True)
+    except Transaction.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    t.delete()
+    return Response(status=204)
+
+
+@api_view(['POST'])
+@approved_only
+def routine_reorder(request):
+    ids = request.data.get('ordered_ids', [])
+    tasks = RoutineTask.objects.filter(user=request.user, id__in=ids)
+    id_map = {t.id: t for t in tasks}
+    to_update = []
+    for pos, tid in enumerate(ids, start=1):
+        t = id_map.get(tid)
+        if t and t.position != pos:
+            t.position = pos
+            to_update.append(t)
+    if to_update:
+        RoutineTask.objects.bulk_update(to_update, ['position'])
+    return Response({'updated': len(to_update)})
 
 
 @csrf_exempt
@@ -465,7 +587,13 @@ def file_proxy(request, pk):
 @approved_only
 def notes_list(request):
     if request.method == 'GET':
-        notes = TextNote.objects.filter(user=request.user)
+        folder_id = request.GET.get('folder')
+        if folder_id == 'none':
+            notes = TextNote.objects.filter(user=request.user, folder__isnull=True)
+        elif folder_id:
+            notes = TextNote.objects.filter(user=request.user, folder_id=folder_id)
+        else:
+            notes = TextNote.objects.filter(user=request.user)
         return Response(TextNoteSerializer(notes, many=True).data)
     s = TextNoteSerializer(data=request.data)
     if s.is_valid():
@@ -482,6 +610,10 @@ def note_detail(request, pk):
     except TextNote.DoesNotExist:
         return Response({'detail': 'Not found.'}, status=404)
     if request.method == 'PATCH':
+        if list(request.data.keys()) == ['folder']:
+            note.folder_id = request.data.get('folder')
+            note.save(update_fields=['folder'])
+            return Response(TextNoteSerializer(note).data)
         s = TextNoteSerializer(note, data=request.data, partial=True)
         if s.is_valid():
             s.save()
@@ -495,12 +627,16 @@ def note_detail(request, pk):
 
 def _ensure_today_logs(user):
     today = date.today()
-    # today.weekday(): Mon=0, Tue=1, ..., Sun=6 — matches our bitmask
-    today_bit = 1 << today.weekday()
+    today_bit = 1 << today.weekday()  # Mon=0..Sun=6
     active_routines = RoutineTask.objects.filter(user=user, is_active=True)
+
     for rt in active_routines:
         if rt.active_days & today_bit:
+            # Should run today — ensure log exists
             RoutineLog.objects.get_or_create(routine_task=rt, date=today, defaults={'user': user})
+        else:
+            # Should NOT run today — delete any stale log (e.g. created before active_days was set)
+            RoutineLog.objects.filter(routine_task=rt, date=today).delete()
 
 
 @api_view(['GET', 'POST'])
@@ -511,8 +647,11 @@ def routine_tasks_list(request):
         return Response(RoutineTaskSerializer(tasks, many=True).data)
     s = RoutineTaskSerializer(data=request.data)
     if s.is_valid():
-        rt = s.save(user=request.user)
-        RoutineLog.objects.get_or_create(routine_task=rt, date=date.today(), defaults={'user': request.user})
+        max_pos = RoutineTask.objects.filter(user=request.user).aggregate(m=Max('position'))['m'] or 0
+        rt = s.save(user=request.user, position=max_pos + 1)
+        today_bit = 1 << date.today().weekday()
+        if rt.active_days & today_bit:
+            RoutineLog.objects.get_or_create(routine_task=rt, date=date.today(), defaults={'user': request.user})
         return Response(RoutineTaskSerializer(rt).data, status=201)
     return Response(s.errors, status=400)
 
@@ -543,7 +682,7 @@ def routine_today(request):
     _ensure_today_logs(request.user)
     today = date.today()
 
-    today_logs = RoutineLog.objects.filter(user=request.user, date=today).select_related('routine_task')
+    today_logs = RoutineLog.objects.filter(user=request.user, date=today).select_related('routine_task').order_by('routine_task__position', 'routine_task__created_at')
     total_today = today_logs.count()
     done_today = today_logs.filter(completed=True).count()
     today_pct = int((done_today / total_today * 100) if total_today else 0)
@@ -655,7 +794,7 @@ def category_detail(request, pk):
 @approved_only
 def transactions_list(request):
     if request.method == 'GET':
-        txns = Transaction.objects.filter(user=request.user)
+        txns = Transaction.objects.filter(user=request.user, is_deleted=False)
         cat_filter = request.GET.get('category', '')
         if cat_filter == 'none':
             txns = txns.filter(category__isnull=True)
@@ -691,14 +830,56 @@ def transaction_detail(request, pk):
             s.save()
             return Response(s.data)
         return Response(s.errors, status=400)
-    t.delete()
+    from django.utils import timezone as _tz
+    t.is_deleted = True
+    t.deleted_at = _tz.now()
+    t.save(update_fields=['is_deleted', 'deleted_at'])
     return Response(status=204)
 
 
 @api_view(['DELETE'])
 @approved_only
 def transactions_delete_all(request):
-    Transaction.objects.filter(user=request.user).delete()
+    from django.utils import timezone as _tz
+    Transaction.objects.filter(user=request.user, is_deleted=False).update(
+        is_deleted=True, deleted_at=_tz.now()
+    )
+    return Response(status=204)
+
+
+@api_view(['GET'])
+@approved_only
+def transactions_history(request):
+    from datetime import timedelta
+    from django.utils import timezone as _tz
+    cutoff = _tz.now() - timedelta(days=30)
+    txns = Transaction.objects.filter(
+        user=request.user, is_deleted=True, deleted_at__gte=cutoff
+    ).select_related('category')
+    return Response(TransactionSerializer(txns, many=True).data)
+
+
+@api_view(['POST'])
+@approved_only
+def transaction_restore(request, pk):
+    try:
+        t = Transaction.objects.get(pk=pk, user=request.user, is_deleted=True)
+    except Transaction.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    t.is_deleted = False
+    t.deleted_at = None
+    t.save(update_fields=['is_deleted', 'deleted_at'])
+    return Response(TransactionSerializer(t).data)
+
+
+@api_view(['DELETE'])
+@approved_only
+def transaction_permanent_delete(request, pk):
+    try:
+        t = Transaction.objects.get(pk=pk, user=request.user, is_deleted=True)
+    except Transaction.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    t.delete()
     return Response(status=204)
 
 

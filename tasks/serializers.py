@@ -1,8 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
-    UserProfile, Task, TaskCategory, UploadedFile, RoutineTask, RoutineLog,
-    TransactionCategory, Transaction, TextNote,
+    UserProfile, Task, TaskCategory, UploadedFile, FileFolder, NoteFolder,
+    RoutineTask, RoutineLog, TransactionCategory, Transaction, TextNote,
 )
 
 
@@ -68,6 +68,24 @@ class TaskSerializer(serializers.ModelSerializer):
         return value
 
 
+class FileFolderSerializer(serializers.ModelSerializer):
+    file_count = serializers.SerializerMethodField()
+    class Meta:
+        model = FileFolder
+        fields = ['id', 'name', 'created_at', 'file_count']
+    def get_file_count(self, obj):
+        return obj.files.count()
+
+
+class NoteFolderSerializer(serializers.ModelSerializer):
+    note_count = serializers.SerializerMethodField()
+    class Meta:
+        model = NoteFolder
+        fields = ['id', 'name', 'created_at', 'note_count']
+    def get_note_count(self, obj):
+        return obj.notes.count()
+
+
 class UploadedFileSerializer(serializers.ModelSerializer):
     size_display = serializers.CharField(read_only=True)
     file_url = serializers.SerializerMethodField()
@@ -103,7 +121,7 @@ class UploadedFileSerializer(serializers.ModelSerializer):
 class RoutineTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = RoutineTask
-        fields = ['id', 'title', 'is_active', 'reminder_time', 'created_at', 'active_days']
+        fields = ['id', 'title', 'is_active', 'reminder_time', 'created_at', 'active_days', 'position']
         read_only_fields = ['id', 'created_at']
 
 
@@ -135,7 +153,8 @@ class TransactionSerializer(serializers.ModelSerializer):
 
 
 class TextNoteSerializer(serializers.ModelSerializer):
+    folder_name = serializers.CharField(source='folder.name', read_only=True, default=None)
     class Meta:
         model = TextNote
-        fields = ['id', 'heading', 'body', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = ['id', 'heading', 'body', 'created_at', 'updated_at', 'folder', 'folder_name']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'folder_name']
