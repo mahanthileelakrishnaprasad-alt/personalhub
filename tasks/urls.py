@@ -63,6 +63,7 @@ urlpatterns = [
     path('export/tasks/', views.export_tasks),
     path('export/transactions/', views.export_transactions),
     path('export/notes/', views.export_notes),
+    path('export/backup/', views.export_full_backup),
 
     # Admin
     path('admin/users/', views.admin_users),

@@ -94,9 +94,11 @@ def me(request):
     })
 
 
-@api_view(['PATCH'])
+@api_view(['GET', 'PATCH'])
 def update_profile(request):
     profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    if request.method == 'GET':
+        return Response(UserProfileSerializer(profile).data)
     s = UserProfileSerializer(profile, data=request.data, partial=True)
     if s.is_valid():
         s.save()
@@ -502,10 +504,13 @@ def file_proxy(request, pk):
     }
     content_type = MIME_MAP.get(f.file_type, 'application/octet-stream')
 
-    disposition = 'inline'
-    if request.GET.get('download') == '1':
-        safe_name = f.name.replace(chr(34), '')
+    safe_name = f.name.replace('"', '').replace("'", '')
+    # Force download for file types the browser can't meaningfully display inline
+    force_download_types = {'other'}  # html, docx, mp4, zip, etc.
+    if f.file_type in force_download_types or request.GET.get('download') == '1':
         disposition = f'attachment; filename="{safe_name}"'
+    else:
+        disposition = 'inline'
 
     # Use Cloudinary's private_download_url to get a signed, time-limited URL.
     # This is the official way to access raw/restricted Cloudinary resources.
@@ -1039,6 +1044,115 @@ def export_notes(request):
     from django.http import HttpResponse
     resp = HttpResponse(buf.getvalue(), content_type='text/csv')
     resp['Content-Disposition'] = 'attachment; filename="notes.csv"'
+    return resp
+
+
+@api_view(['GET'])
+def export_full_backup(request):
+    """Superuser-only: export ALL users' data from every table as a ZIP of CSVs."""
+    if not request.user.is_authenticated or not request.user.is_superuser:
+        from django.http import HttpResponse as _HR
+        return _HR('Forbidden', status=403)
+
+    import zipfile
+    from django.http import HttpResponse
+    from django.utils import timezone as _tz
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+
+        def csv_bytes(rows, headers):
+            sb = io.StringIO()
+            cw = csv.writer(sb)
+            cw.writerow(headers)
+            cw.writerows(rows)
+            return sb.getvalue().encode('utf-8')
+
+        # Users
+        zf.writestr('users.csv', csv_bytes(
+            [[u.id, u.username, u.email, u.is_superuser, u.date_joined.date()]
+             for u in User.objects.all()],
+            ['ID','Username','Email','Superuser','Joined']
+        ))
+
+        # Profiles
+        from .models import UserProfile as _UP
+        zf.writestr('profiles.csv', csv_bytes(
+            [[p.user.username, p.is_approved, p.reminder_email, p.bio, p.theme]
+             for p in _UP.objects.select_related('user').all()],
+            ['Username','Approved','ReminderEmail','Bio','Theme']
+        ))
+
+        # Tasks
+        zf.writestr('tasks.csv', csv_bytes(
+            [[t.user.username, t.id, t.title, t.note, t.completed,
+              t.category.name if t.category else '', t.due_date or '',
+              t.is_recurring, t.recur_days, t.position, t.created_at.date()]
+             for t in Task.objects.select_related('user','category').all()],
+            ['User','ID','Title','Note','Completed','Category','DueDate','Recurring','RecurDays','Position','Created']
+        ))
+
+        # Routine tasks
+        zf.writestr('routine_tasks.csv', csv_bytes(
+            [[r.user.username, r.id, r.title, r.active_days, r.reminder_time or '', r.position, r.is_active]
+             for r in RoutineTask.objects.select_related('user').all()],
+            ['User','ID','Title','ActiveDays','ReminderTime','Position','IsActive']
+        ))
+
+        # Routine logs
+        zf.writestr('routine_logs.csv', csv_bytes(
+            [[l.user.username, l.routine_task.title, l.date, l.completed, l.completed_at or '']
+             for l in RoutineLog.objects.select_related('user','routine_task').all()],
+            ['User','Habit','Date','Completed','CompletedAt']
+        ))
+
+        # Transactions
+        zf.writestr('transactions.csv', csv_bytes(
+            [[t.user.username, t.id, t.title, t.amount, t.transaction_type,
+              t.category.name if t.category else '', t.note, t.is_deleted, t.created_at.date()]
+             for t in Transaction.objects.select_related('user','category').all()],
+            ['User','ID','Title','Amount','Type','Category','Note','Deleted','Date']
+        ))
+
+        # Transaction categories
+        zf.writestr('transaction_categories.csv', csv_bytes(
+            [[c.user.username, c.id, c.name, c.monthly_budget or '']
+             for c in TransactionCategory.objects.select_related('user').all()],
+            ['User','ID','Name','MonthlyBudget']
+        ))
+
+        # Files
+        zf.writestr('files.csv', csv_bytes(
+            [[f.user.username, f.id, f.name, f.file_type, f.size,
+              f.folder.name if f.folder else '', f.cloudinary_url, f.uploaded_at.date()]
+             for f in UploadedFile.objects.select_related('user','folder').all()],
+            ['User','ID','Name','Type','Size','Folder','URL','Uploaded']
+        ))
+
+        # Notes
+        zf.writestr('notes.csv', csv_bytes(
+            [[n.user.username, n.id, n.heading, n.body,
+              n.folder.name if n.folder else '', n.updated_at.date()]
+             for n in TextNote.objects.select_related('user','folder').all()],
+            ['User','ID','Heading','Body','Folder','Updated']
+        ))
+
+        # File folders
+        zf.writestr('file_folders.csv', csv_bytes(
+            [[f.user.username, f.id, f.name] for f in FileFolder.objects.select_related('user').all()],
+            ['User','ID','Name']
+        ))
+
+        # Note folders
+        zf.writestr('note_folders.csv', csv_bytes(
+            [[f.user.username, f.id, f.name] for f in NoteFolder.objects.select_related('user').all()],
+            ['User','ID','Name']
+        ))
+
+    buf.seek(0)
+    stamp = _tz.now().strftime('%Y%m%d_%H%M')
+    resp = HttpResponse(buf.read(), content_type='application/zip')
+    resp['Content-Disposition'] = f'attachment; filename="personalhub_backup_{stamp}.zip"'
     return resp
 
 

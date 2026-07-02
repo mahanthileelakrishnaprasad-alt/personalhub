@@ -7,9 +7,14 @@ from .models import (
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source='user.username', read_only=True)
+    email = serializers.CharField(source='user.email', read_only=True)
+
     class Meta:
         model = UserProfile
-        fields = ['is_approved', 'reminder_email', 'requested_at', 'approved_at']
+        fields = ['id', 'is_approved', 'reminder_email', 'requested_at', 'approved_at',
+                  'avatar_url', 'bio', 'theme', 'username', 'email']
+        read_only_fields = ['id', 'is_approved', 'requested_at', 'approved_at', 'username', 'email']
 
 
 class UserSerializer(serializers.ModelSerializer):
