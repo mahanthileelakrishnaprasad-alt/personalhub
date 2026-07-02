@@ -8,6 +8,8 @@ urlpatterns = [
     path('auth/logout/', views.logout_view),
     path('auth/me/', views.me),
     path('auth/profile/', views.update_profile),
+    path('auth/avatar/', views.upload_avatar),
+    path('auth/stats/', views.account_stats),
 
     # Tasks
     path('tasks/', views.tasks_list),
@@ -17,6 +19,7 @@ urlpatterns = [
     path('tasks/<int:pk>/', views.task_detail),
     path('tasks/<int:pk>/complete/', views.task_complete),
     path('tasks/<int:pk>/restore/', views.task_restore),
+    path('tasks/<int:pk>/subtasks/', views.subtasks_list),
     path('tasks/treasure/delete-all/', views.delete_all_treasure),
 
     # Files
@@ -35,6 +38,7 @@ urlpatterns = [
     # Routine
     path('routine/tasks/', views.routine_tasks_list),
     path('routine/reorder/', views.routine_reorder),
+    path('routine/streaks/', views.routine_streaks),
     path('routine/tasks/<int:pk>/', views.routine_task_detail),
     path('routine/today/', views.routine_today),
     path('routine/logs/<int:pk>/toggle/', views.routine_log_toggle),
@@ -45,11 +49,20 @@ urlpatterns = [
     path('transactions/categories/', views.categories_list),
     path('transactions/categories/<int:pk>/', views.category_detail),
     path('transactions/', views.transactions_list),
+    path('transactions/charts/', views.transaction_charts),
     path('transactions/history/', views.transactions_history),
     path('transactions/<int:pk>/', views.transaction_detail),
     path('transactions/<int:pk>/restore/', views.transaction_restore),
     path('transactions/<int:pk>/permanent/', views.transaction_permanent_delete),
     path('transactions/delete-all/', views.transactions_delete_all),
+
+    # Search
+    path('search/', views.global_search),
+
+    # Export
+    path('export/tasks/', views.export_tasks),
+    path('export/transactions/', views.export_transactions),
+    path('export/notes/', views.export_notes),
 
     # Admin
     path('admin/users/', views.admin_users),

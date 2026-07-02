@@ -14,6 +14,7 @@ from django.utils import timezone
 from datetime import date
 
 from tasks.models import Task, RoutineTask, RoutineLog, UserProfile
+from django.db import models
 
 BREVO_API_KEY = os.environ.get('BREVO_API_KEY', '')
 FROM_EMAIL = os.environ.get(
@@ -94,16 +95,37 @@ class Command(BaseCommand):
                 self.stderr.write(f"Failed to send task reminder {task.pk}: {e}")
 
         # ── Daily routine reminders ──────────────────────────────────────
+        # Only send within a ±15-minute window of the set reminder_time.
+        # This prevents midnight cron from firing ALL reminders at once.
         today = date.today()
-        current_time = now.time()
+        from datetime import timedelta as _td, datetime as _dt
+        # Window: now-15min to now+15min
+        window_start = (now - _td(minutes=15)).time()
+        window_end   = (now + _td(minutes=15)).time()
 
-        due_routines = RoutineTask.objects.filter(
-            is_active=True,
-            reminder_time__isnull=False,
-            reminder_time__lte=current_time,
-        ).select_related('user')
+        # Handle midnight wraparound
+        if window_start <= window_end:
+            due_routines = RoutineTask.objects.filter(
+                is_active=True,
+                reminder_time__isnull=False,
+                reminder_time__gte=window_start,
+                reminder_time__lte=window_end,
+            ).select_related('user')
+        else:
+            # Wraps around midnight
+            due_routines = RoutineTask.objects.filter(
+                is_active=True,
+                reminder_time__isnull=False,
+            ).filter(
+                models.Q(reminder_time__gte=window_start) |
+                models.Q(reminder_time__lte=window_end)
+            ).select_related('user')
 
         for routine in due_routines:
+            # Also check active_days bitmask — skip if today is not an active day
+            today_bit = 1 << today.weekday()
+            if not (routine.active_days & today_bit):
+                continue
             log, _ = RoutineLog.objects.get_or_create(
                 routine_task=routine, date=today, defaults={'user': routine.user}
             )

@@ -8,6 +8,9 @@ class UserProfile(models.Model):
     requested_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     reminder_email = models.EmailField(blank=True, default='')
+    avatar_url = models.TextField(blank=True, default='')
+    bio = models.TextField(blank=True, default='')
+    theme = models.CharField(max_length=10, default='dark')
 
     def __str__(self):
         return f"{self.user.username} ({'approved' if self.is_approved else 'pending'})"
@@ -39,6 +42,10 @@ class Task(models.Model):
         on_delete=models.SET_NULL, related_name='tasks'
     )
     position = models.PositiveIntegerField(default=0)
+    due_date = models.DateTimeField(null=True, blank=True)
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='subtasks')
+    is_recurring = models.BooleanField(default=False)
+    recur_days = models.PositiveSmallIntegerField(default=0)  # bitmask like active_days
 
     class Meta:
         ordering = ['position', 'created_at']
@@ -142,6 +149,7 @@ class TransactionCategory(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='transaction_categories')
     name = models.CharField(max_length=100)
     created_at = models.DateTimeField(auto_now_add=True)
+    monthly_budget = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
     class Meta:
         ordering = ['name']

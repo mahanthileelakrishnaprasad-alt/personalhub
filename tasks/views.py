@@ -7,7 +7,9 @@ from rest_framework.authtoken.models import Token
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.utils import timezone
-from django.db.models import Sum, Max
+from django.db.models import Sum, Max, Count, Q
+import csv
+import io
 from datetime import date, timedelta
 import os, hmac, threading
 from django.core import management
@@ -907,6 +909,196 @@ def _format_bytes(n):
     if n < 1024 * 1024:
         return f"{n / 1024:.1f} KB"
     return f"{n / (1024 * 1024):.2f} MB"
+
+
+# ── GLOBAL SEARCH ─────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@approved_only
+def global_search(request):
+    q = request.GET.get('q', '').strip()
+    if not q or len(q) < 2:
+        return Response({'tasks': [], 'notes': [], 'files': [], 'transactions': []})
+    tasks = Task.objects.filter(user=request.user, completed=False).filter(
+        Q(title__icontains=q) | Q(note__icontains=q)
+    )[:8]
+    notes = TextNote.objects.filter(user=request.user).filter(
+        Q(heading__icontains=q) | Q(body__icontains=q)
+    )[:8]
+    files = UploadedFile.objects.filter(user=request.user, name__icontains=q)[:8]
+    transactions = Transaction.objects.filter(user=request.user, is_deleted=False).filter(
+        Q(title__icontains=q) | Q(note__icontains=q)
+    )[:8]
+    return Response({
+        'tasks': TaskSerializer(tasks, many=True).data,
+        'notes': TextNoteSerializer(notes, many=True).data,
+        'files': UploadedFileSerializer(files, many=True).data,
+        'transactions': TransactionSerializer(transactions, many=True).data,
+    })
+
+
+# ── ROUTINE STREAKS ────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@approved_only
+def routine_streaks(request):
+    from datetime import timedelta
+    today = date.today()
+    tasks = RoutineTask.objects.filter(user=request.user, is_active=True)
+    result = []
+    for rt in tasks:
+        all_logs = list(RoutineLog.objects.filter(routine_task=rt, completed=True).order_by('-date'))
+        current = 0; best = 0
+        if all_logs:
+            streak = 1; prev = all_logs[0].date
+            for log in all_logs[1:]:
+                if (prev - log.date).days == 1:
+                    streak += 1; prev = log.date
+                else:
+                    break
+            current = streak
+            s = 1; b = 1; sorted_asc = sorted(all_logs, key=lambda x: x.date)
+            for i in range(1, len(sorted_asc)):
+                if (sorted_asc[i].date - sorted_asc[i-1].date).days == 1:
+                    s += 1; b = max(b, s)
+                else:
+                    s = 1
+            best = max(b, s)
+        result.append({'id': rt.id, 'title': rt.title, 'current_streak': current, 'best_streak': best})
+    return Response(result)
+
+
+# ── MONEY CHARTS ──────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@approved_only
+def transaction_charts(request):
+    from datetime import timedelta
+    from collections import defaultdict
+    today = date.today()
+    start = today - timedelta(days=29)
+    txns = Transaction.objects.filter(
+        user=request.user, is_deleted=False,
+        created_at__date__gte=start,
+    ).values('created_at__date', 'transaction_type', 'amount')
+    daily = defaultdict(lambda: {'income': 0.0, 'expense': 0.0})
+    for t in txns:
+        d = str(t['created_at__date'])
+        daily[d][t['transaction_type']] += float(t['amount'])
+    chart_data = []
+    for i in range(30):
+        d = str(start + timedelta(days=i))
+        chart_data.append({'date': d, 'income': daily[d]['income'], 'expense': daily[d]['expense']})
+    cat_data = list(Transaction.objects.filter(
+        user=request.user, is_deleted=False, transaction_type='expense',
+        created_at__year=today.year, created_at__month=today.month
+    ).values('category__name').annotate(total=Sum('amount')).order_by('-total'))
+    return Response({'daily': chart_data, 'by_category': cat_data})
+
+
+# ── EXPORT DATA ───────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@approved_only
+def export_tasks(request):
+    tasks = Task.objects.filter(user=request.user)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['ID','Title','Note','Completed','Category','Due Date','Created'])
+    for t in tasks:
+        w.writerow([t.id, t.title, t.note, t.completed,
+                    t.category.name if t.category else '', t.due_date or '', t.created_at.date()])
+    from django.http import HttpResponse
+    resp = HttpResponse(buf.getvalue(), content_type='text/csv')
+    resp['Content-Disposition'] = 'attachment; filename="tasks.csv"'
+    return resp
+
+
+@api_view(['GET'])
+@approved_only
+def export_transactions(request):
+    txns = Transaction.objects.filter(user=request.user, is_deleted=False)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['ID','Title','Amount','Type','Category','Note','Date'])
+    for t in txns:
+        w.writerow([t.id, t.title, t.amount, t.transaction_type,
+                    t.category.name if t.category else '', t.note, t.created_at.date()])
+    from django.http import HttpResponse
+    resp = HttpResponse(buf.getvalue(), content_type='text/csv')
+    resp['Content-Disposition'] = 'attachment; filename="transactions.csv"'
+    return resp
+
+
+@api_view(['GET'])
+@approved_only
+def export_notes(request):
+    notes = TextNote.objects.filter(user=request.user)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['ID','Heading','Body','Folder','Updated'])
+    for n in notes:
+        w.writerow([n.id, n.heading, n.body,
+                    n.folder.name if n.folder else '', n.updated_at.date()])
+    from django.http import HttpResponse
+    resp = HttpResponse(buf.getvalue(), content_type='text/csv')
+    resp['Content-Disposition'] = 'attachment; filename="notes.csv"'
+    return resp
+
+
+# ── SUBTASKS ──────────────────────────────────────────────────────────────────
+@api_view(['GET', 'POST'])
+@approved_only
+def subtasks_list(request, pk):
+    try:
+        parent = Task.objects.get(pk=pk, user=request.user)
+    except Task.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'GET':
+        return Response(TaskSerializer(parent.subtasks.all(), many=True).data)
+    s = TaskSerializer(data=request.data)
+    if s.is_valid():
+        max_pos = parent.subtasks.aggregate(m=Max('position'))['m'] or 0
+        s.save(user=request.user, parent=parent, position=max_pos+1)
+        return Response(s.data, status=201)
+    return Response(s.errors, status=400)
+
+
+# ── PROFILE AVATAR ──────────────────────────────────────────────────────────
+@api_view(['POST'])
+@approved_only
+@parser_classes([MultiPartParser, FormParser])
+def upload_avatar(request):
+    uploaded = request.FILES.get('avatar')
+    if not uploaded:
+        return Response({'detail': 'No file.'}, status=400)
+    from django.conf import settings as _s
+    cfg = _s.CLOUDINARY_STORAGE
+    if cfg.get('CLOUD_NAME'):
+        import cloudinary.uploader as _cu
+        try:
+            result = _cu.upload(uploaded, folder='avatars', resource_type='image',
+                                transformation=[{'width': 200, 'height': 200, 'crop': 'fill'}])
+            url = result.get('secure_url', '')
+        except Exception as e:
+            return Response({'detail': str(e)}, status=500)
+    else:
+        url = ''
+    profile = request.user.profile
+    profile.avatar_url = url
+    profile.save(update_fields=['avatar_url'])
+    return Response({'avatar_url': url})
+
+
+# ── ACCOUNT STATS ─────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@approved_only
+def account_stats(request):
+    user = request.user
+    return Response({
+        'tasks_done': Task.objects.filter(user=user, completed=True).count(),
+        'tasks_active': Task.objects.filter(user=user, completed=False).count(),
+        'habits_completed': RoutineLog.objects.filter(user=user, completed=True).count(),
+        'notes': TextNote.objects.filter(user=user).count(),
+        'files': UploadedFile.objects.filter(user=user).count(),
+        'transactions': Transaction.objects.filter(user=user, is_deleted=False).count(),
+    })
 
 
 @api_view(['GET', 'POST'])
