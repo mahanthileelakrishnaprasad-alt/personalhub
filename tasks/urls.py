@@ -10,6 +10,7 @@ urlpatterns = [
     path('auth/profile/', views.update_profile),
     path('auth/avatar/', views.upload_avatar),
     path('auth/stats/', views.account_stats),
+    path('auth/change-password/', views.change_password),
 
     # Tasks
     path('tasks/', views.tasks_list),
@@ -40,6 +41,10 @@ urlpatterns = [
     path('routine/reorder/', views.routine_reorder),
     path('routine/streaks/', views.routine_streaks),
     path('routine/tasks/<int:pk>/', views.routine_task_detail),
+    path('routine/tasks/<int:pk>/subtasks/', views.routine_subtasks_list),
+    path('routine/tasks/<int:pk>/subtasks/today/', views.routine_subtask_today),
+    path('routine/subtasks/<int:pk>/', views.routine_subtask_detail),
+    path('routine/subtasks/<int:pk>/toggle/', views.routine_subtask_toggle),
     path('routine/today/', views.routine_today),
     path('routine/logs/<int:pk>/toggle/', views.routine_log_toggle),
     path('routine/history/', views.routine_history),
@@ -65,9 +70,13 @@ urlpatterns = [
     path('export/notes/', views.export_notes),
     path('export/backup/', views.export_full_backup),
 
+    # Cloud backup
+    path('backup/cloud/', views.manual_backup_to_cloud),
+
     # Admin
     path('admin/users/', views.admin_users),
 
     # Cron
     path('cron/send-reminders/', views.cron_send_reminders),
+    path('cron/daily-backup/', views.cron_daily_backup),
 ]

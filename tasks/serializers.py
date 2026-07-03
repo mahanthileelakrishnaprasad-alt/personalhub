@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
     UserProfile, Task, TaskCategory, UploadedFile, FileFolder, NoteFolder,
-    RoutineTask, RoutineLog, TransactionCategory, Transaction, TextNote,
+    RoutineTask, RoutineLog, RoutineSubtask, TransactionCategory, Transaction, TextNote,
 )
 
 
@@ -122,6 +122,13 @@ class UploadedFileSerializer(serializers.ModelSerializer):
             except Exception:
                 return None
         return None
+
+
+class RoutineSubtaskSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoutineSubtask
+        fields = ['id', 'title', 'position']
+        read_only_fields = ['id']
 
 
 class RoutineTaskSerializer(serializers.ModelSerializer):

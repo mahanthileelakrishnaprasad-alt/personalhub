@@ -17,12 +17,14 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .models import (
     Task, TaskCategory, UploadedFile, FileFolder, NoteFolder,
-    RoutineTask, RoutineLog, TransactionCategory, Transaction, TextNote, UserProfile,
+    RoutineTask, RoutineLog, RoutineSubtask, RoutineSubtaskLog,
+    TransactionCategory, Transaction, TextNote, UserProfile,
 )
 from .serializers import (
     RegisterSerializer, UserSerializer, TaskSerializer, TaskCategorySerializer,
     UploadedFileSerializer, FileFolderSerializer, NoteFolderSerializer,
-    RoutineTaskSerializer, RoutineLogSerializer, TransactionCategorySerializer,
+    RoutineTaskSerializer, RoutineLogSerializer, RoutineSubtaskSerializer,
+    TransactionCategorySerializer,
     TransactionSerializer, TextNoteSerializer, UserProfileSerializer,
 )
 
@@ -1215,6 +1217,97 @@ def account_stats(request):
     })
 
 
+# ── CHANGE PASSWORD ───────────────────────────────────────────────────────────
+@api_view(['POST'])
+@approved_only
+def change_password(request):
+    user = request.user
+    old_pw = request.data.get('old_password', '')
+    new_pw = request.data.get('new_password', '')
+    if not old_pw or not new_pw:
+        return Response({'detail': 'Both old and new password required.'}, status=400)
+    if not user.check_password(old_pw):
+        return Response({'detail': 'Current password is incorrect.'}, status=400)
+    if len(new_pw) < 6:
+        return Response({'detail': 'New password must be at least 6 characters.'}, status=400)
+    user.set_password(new_pw)
+    user.save()
+    # Re-create auth token so user stays logged in
+    from rest_framework.authtoken.models import Token
+    Token.objects.filter(user=user).delete()
+    token = Token.objects.create(user=user)
+    return Response({'detail': 'Password changed successfully.', 'token': token.key})
+
+
+# ── ROUTINE SUBTASKS ──────────────────────────────────────────────────────────
+@api_view(['GET', 'POST'])
+@approved_only
+def routine_subtasks_list(request, pk):
+    try:
+        rt = RoutineTask.objects.get(pk=pk, user=request.user)
+    except RoutineTask.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'GET':
+        subs = rt.subtasks.all()
+        return Response(RoutineSubtaskSerializer(subs, many=True).data)
+    s = RoutineSubtaskSerializer(data=request.data)
+    if s.is_valid():
+        max_pos = rt.subtasks.aggregate(m=Max('position'))['m'] or 0
+        s.save(routine_task=rt, user=request.user, position=max_pos+1)
+        return Response(s.data, status=201)
+    return Response(s.errors, status=400)
+
+
+@api_view(['PATCH', 'DELETE'])
+@approved_only
+def routine_subtask_detail(request, pk):
+    try:
+        sub = RoutineSubtask.objects.get(pk=pk, user=request.user)
+    except RoutineSubtask.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    if request.method == 'PATCH':
+        s = RoutineSubtaskSerializer(sub, data=request.data, partial=True)
+        if s.is_valid():
+            s.save()
+            return Response(s.data)
+        return Response(s.errors, status=400)
+    sub.delete()
+    return Response(status=204)
+
+
+@api_view(['POST'])
+@approved_only
+def routine_subtask_toggle(request, pk):
+    """Toggle daily completion of a routine subtask for today."""
+    try:
+        sub = RoutineSubtask.objects.get(pk=pk, user=request.user)
+    except RoutineSubtask.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    log, created = RoutineSubtaskLog.objects.get_or_create(
+        subtask=sub, date=date.today(), defaults={'user': request.user}
+    )
+    log.completed = not log.completed
+    log.save(update_fields=['completed'])
+    return Response({'id': sub.id, 'completed': log.completed, 'date': str(date.today())})
+
+
+@api_view(['GET'])
+@approved_only
+def routine_subtask_today(request, pk):
+    """Get today's completion status for all subtasks of a routine task."""
+    try:
+        rt = RoutineTask.objects.get(pk=pk, user=request.user)
+    except RoutineTask.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    today = date.today()
+    subs = rt.subtasks.all()
+    logs = {l.subtask_id: l.completed for l in
+            RoutineSubtaskLog.objects.filter(subtask__routine_task=rt, date=today)}
+    data = [{'id': s.id, 'title': s.title, 'position': s.position,
+             'completed': logs.get(s.id, False)} for s in subs]
+    return Response(data)
+
+
 @api_view(['GET', 'POST'])
 def admin_users(request):
     if not request.user.is_superuser:
@@ -1289,6 +1382,119 @@ def _run_reminders():
         logging.getLogger(__name__).error('send_reminders failed: %s', e)
 
 
+def _build_backup_zip():
+    """Build the full backup ZIP in memory and return bytes."""
+    import zipfile
+    from django.utils import timezone as _tz
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        def csv_bytes(rows, headers):
+            sb = io.StringIO()
+            cw = csv.writer(sb)
+            cw.writerow(headers)
+            cw.writerows(rows)
+            return sb.getvalue().encode('utf-8')
+
+        zf.writestr('users.csv', csv_bytes(
+            [[u.id, u.username, u.email, u.is_superuser, u.date_joined.date()]
+             for u in User.objects.all()],
+            ['ID','Username','Email','Superuser','Joined']
+        ))
+        zf.writestr('profiles.csv', csv_bytes(
+            [[p.user.username, p.is_approved, p.reminder_email, p.bio, p.theme]
+             for p in UserProfile.objects.select_related('user').all()],
+            ['Username','Approved','ReminderEmail','Bio','Theme']
+        ))
+        zf.writestr('tasks.csv', csv_bytes(
+            [[t.user.username, t.id, t.title, t.note, t.completed,
+              t.category.name if t.category else '', t.due_date or '',
+              t.is_recurring, t.recur_days, t.position, t.created_at.date()]
+             for t in Task.objects.select_related('user','category').all()],
+            ['User','ID','Title','Note','Completed','Category','DueDate','Recurring','RecurDays','Position','Created']
+        ))
+        zf.writestr('routine_tasks.csv', csv_bytes(
+            [[r.user.username, r.id, r.title, r.active_days, r.reminder_time or '', r.position, r.is_active]
+             for r in RoutineTask.objects.select_related('user').all()],
+            ['User','ID','Title','ActiveDays','ReminderTime','Position','IsActive']
+        ))
+        zf.writestr('routine_logs.csv', csv_bytes(
+            [[l.user.username, l.routine_task.title, l.date, l.completed, l.completed_at or '']
+             for l in RoutineLog.objects.select_related('user','routine_task').all()],
+            ['User','Habit','Date','Completed','CompletedAt']
+        ))
+        zf.writestr('transactions.csv', csv_bytes(
+            [[t.user.username, t.id, t.title, t.amount, t.transaction_type,
+              t.category.name if t.category else '', t.note, t.is_deleted, t.created_at.date()]
+             for t in Transaction.objects.select_related('user','category').all()],
+            ['User','ID','Title','Amount','Type','Category','Note','Deleted','Date']
+        ))
+        zf.writestr('transaction_categories.csv', csv_bytes(
+            [[c.user.username, c.id, c.name, c.monthly_budget or '']
+             for c in TransactionCategory.objects.select_related('user').all()],
+            ['User','ID','Name','MonthlyBudget']
+        ))
+        zf.writestr('files.csv', csv_bytes(
+            [[f.user.username, f.id, f.name, f.file_type, f.size,
+              f.folder.name if f.folder else '', f.cloudinary_url, f.uploaded_at.date()]
+             for f in UploadedFile.objects.select_related('user','folder').all()],
+            ['User','ID','Name','Type','Size','Folder','URL','Uploaded']
+        ))
+        zf.writestr('notes.csv', csv_bytes(
+            [[n.user.username, n.id, n.heading, n.body,
+              n.folder.name if n.folder else '', n.updated_at.date()]
+             for n in TextNote.objects.select_related('user','folder').all()],
+            ['User','ID','Heading','Body','Folder','Updated']
+        ))
+        zf.writestr('file_folders.csv', csv_bytes(
+            [[f.user.username, f.id, f.name] for f in FileFolder.objects.select_related('user').all()],
+            ['User','ID','Name']
+        ))
+        zf.writestr('note_folders.csv', csv_bytes(
+            [[f.user.username, f.id, f.name] for f in NoteFolder.objects.select_related('user').all()],
+            ['User','ID','Name']
+        ))
+    buf.seek(0)
+    return buf.read()
+
+
+def _upload_backup_to_cloudinary(zip_bytes, stamp):
+    """Upload backup ZIP to Cloudinary as a raw resource. Returns secure_url or raises."""
+    from django.conf import settings as _s
+    import cloudinary.uploader as _cu
+    import cloudinary as _cl
+
+    cfg = _s.CLOUDINARY_STORAGE
+    _cl.config(
+        cloud_name=cfg.get('CLOUD_NAME',''),
+        api_key=cfg.get('API_KEY',''),
+        api_secret=cfg.get('API_SECRET',''),
+    )
+    result = _cu.upload(
+        io.BytesIO(zip_bytes),
+        resource_type='raw',
+        folder='personalhub_backups',
+        public_id=f'backup_{stamp}',
+        overwrite=True,
+        use_filename=False,
+    )
+    return result.get('secure_url', '')
+
+
+def _run_auto_backup():
+    """Run backup in background thread: build ZIP, upload to Cloudinary."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from django.utils import timezone as _tz
+        stamp = _tz.now().strftime('%Y%m%d_%H%M')
+        zip_bytes = _build_backup_zip()
+        url = _upload_backup_to_cloudinary(zip_bytes, stamp)
+        logger.info('Auto backup uploaded to Cloudinary: %s', url)
+    except Exception as e:
+        logger.error('Auto backup failed: %s', e)
+
+
 @csrf_exempt
 @api_view(['GET', 'POST'])
 @permission_classes([AllowAny])
@@ -1299,6 +1505,38 @@ def cron_send_reminders(request):
     provided = request.GET.get('key', '') or request.headers.get('X-Cron-Key', '')
     if not hmac.compare_digest(provided, secret):
         return Response({'error': 'Forbidden'}, status=403)
+    # Run reminders
     t = threading.Thread(target=_run_reminders, daemon=True)
     t.start()
     return Response({'ok': True, 'msg': 'Reminder job started in background'})
+
+
+@csrf_exempt
+@api_view(['GET', 'POST'])
+@permission_classes([AllowAny])
+def cron_daily_backup(request):
+    """Called by cron scheduler daily at midnight. Uploads backup to Cloudinary."""
+    secret = CRON_SECRET
+    if not secret:
+        return Response({'error': 'Forbidden'}, status=403)
+    provided = request.GET.get('key', '') or request.headers.get('X-Cron-Key', '')
+    if not hmac.compare_digest(provided, secret):
+        return Response({'error': 'Forbidden'}, status=403)
+    t = threading.Thread(target=_run_auto_backup, daemon=True)
+    t.start()
+    return Response({'ok': True, 'msg': 'Backup started in background'})
+
+
+@api_view(['POST'])
+def manual_backup_to_cloud(request):
+    """Superuser triggers manual backup upload to Cloudinary. Returns the URL."""
+    if not request.user.is_authenticated or not request.user.is_superuser:
+        return Response({'error': 'Forbidden'}, status=403)
+    try:
+        from django.utils import timezone as _tz
+        stamp = _tz.now().strftime('%Y%m%d_%H%M')
+        zip_bytes = _build_backup_zip()
+        url = _upload_backup_to_cloudinary(zip_bytes, stamp)
+        return Response({'ok': True, 'url': url, 'stamp': stamp})
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)

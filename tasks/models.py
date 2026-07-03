@@ -145,6 +145,31 @@ class RoutineLog(models.Model):
         return f"{self.routine_task.title} - {self.date}"
 
 
+class RoutineSubtask(models.Model):
+    routine_task = models.ForeignKey(RoutineTask, on_delete=models.CASCADE, related_name='subtasks')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='routine_subtasks')
+    title = models.CharField(max_length=300)
+    position = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['position']
+
+    def __str__(self):
+        return self.title
+
+
+class RoutineSubtaskLog(models.Model):
+    """Tracks daily completion of each subtask."""
+    subtask = models.ForeignKey(RoutineSubtask, on_delete=models.CASCADE, related_name='logs')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='routine_subtask_logs')
+    date = models.DateField()
+    completed = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ['subtask', 'date']
+        ordering = ['-date']
+
+
 class TransactionCategory(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='transaction_categories')
     name = models.CharField(max_length=100)
