@@ -126,8 +126,9 @@ REST_FRAMEWORK = {
 # ── CORS (allow Vite dev server + production frontend) ───────────────────────
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
-    'http://127.0.0.1:5173',
+    'http://127.0.0.1:5173',"https://krishnahub.dpdns.org",
     'https://mythings-xnic.onrender.com',
+    
 ]
 CORS_ALLOW_CREDENTIALS = True
 # Add your production frontend URL here once deployed, e.g.:
