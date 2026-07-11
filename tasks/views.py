@@ -1505,8 +1505,38 @@ def cron_send_reminders(request):
     provided = request.GET.get('key', '') or request.headers.get('X-Cron-Key', '')
     if not hmac.compare_digest(provided, secret):
         return Response({'error': 'Forbidden'}, status=403)
-    # Run reminders
-    t = threading.Thread(target=_run_reminders, daemon=True)
+    # Optional: ?debug=1 logs what would fire without sending
+    # Optional: ?force_time=17:00 tests a specific IST time
+    debug      = request.GET.get('debug', '0') == '1'
+    force_time = request.GET.get('force_time', '')
+
+    def _run():
+        try:
+            args = []
+            if debug:      args.append('--debug')
+            if force_time: args += ['--force-time', force_time]
+            management.call_command('send_reminders', *args)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error('send_reminders failed: %s', e)
+
+    if debug:
+        # Run synchronously when debugging so response includes output
+        import io, sys
+        buf = io.StringIO()
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        sys.stdout = sys.stderr = buf
+        try:
+            args = ['--debug']
+            if force_time: args += ['--force-time', force_time]
+            management.call_command('send_reminders', *args)
+        except Exception as e:
+            buf.write(f'ERROR: {e}')
+        finally:
+            sys.stdout, sys.stderr = old_stdout, old_stderr
+        return Response({'ok': True, 'debug': True, 'output': buf.getvalue()})
+
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
     return Response({'ok': True, 'msg': 'Reminder job started in background'})
 
